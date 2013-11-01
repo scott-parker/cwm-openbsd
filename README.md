@@ -1,7 +1,7 @@
 cwm
 ===
 
-Linux port of OpenBSD cwm.
+OpenBSD cwm ported to Linux.
 
 cwm is a window manager for X11 which contains many features that concentrate
 on the efficiency and transparency of window management. cwm also aims to
