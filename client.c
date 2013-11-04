@@ -15,7 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: client.c,v 1.119 2013/01/08 15:16:05 okan Exp $
+ * $OpenBSD: client.c,v 1.136 2013/07/15 23:51:59 okan Exp $
  */
 
 #include <sys/param.h>
@@ -36,9 +36,8 @@ static struct client_ctx	*client_mruprev(struct client_ctx *);
 static void			 client_mtf(struct client_ctx *);
 static void			 client_none(struct screen_ctx *);
 static void			 client_placecalc(struct client_ctx *);
-static void			 client_update(struct client_ctx *);
-static void			 client_gethints(struct client_ctx *);
-static void			 client_freehints(struct client_ctx *);
+static void			 client_wm_protocols(struct client_ctx *);
+static void			 client_getmwmhints(struct client_ctx *);
 static int			 client_inbound(struct client_ctx *, int, int);
 
 struct client_ctx	*_curcc = NULL;
@@ -56,9 +55,10 @@ client_find(Window win)
 }
 
 struct client_ctx *
-client_new(Window win, struct screen_ctx *sc, int mapped)
+client_init(Window win, struct screen_ctx *sc, int mapped)
 {
 	struct client_ctx	*cc;
+	XClassHint		 xch;
 	XWindowAttributes	 wattr;
 	XWMHints		*wmhints;
 	int			 state;
@@ -82,6 +82,12 @@ client_new(Window win, struct screen_ctx *sc, int mapped)
 
 	conf_client(cc);
 
+	if (XGetClassHint(X_Dpy, cc->win, &xch)) {
+		cc->app_name = xch.res_name;
+		cc->app_class = xch.res_class;
+	}
+	client_getmwmhints(cc);
+
 	/* Saved pointer position */
 	cc->ptr.x = -1;
 	cc->ptr.y = -1;
@@ -95,17 +101,18 @@ client_new(Window win, struct screen_ctx *sc, int mapped)
 
 	if (wattr.map_state != IsViewable) {
 		client_placecalc(cc);
+		client_move(cc);
 		if ((wmhints = XGetWMHints(X_Dpy, cc->win)) != NULL) {
-			if (wmhints->flags & StateHint)
-				xu_setstate(cc, wmhints->initial_state);
-
+			if (wmhints->flags & StateHint) {
+				cc->state = wmhints->initial_state;
+				xu_set_wm_state(cc->win, cc->state);
+			}
 			XFree(wmhints);
 		}
-		client_move(cc);
 	}
 	client_draw_border(cc);
 
-	if (xu_getstate(cc, &state) < 0)
+	if (xu_get_wm_state(cc->win, &state) < 0)
 		state = NormalState;
 
 	XSelectInput(X_Dpy, cc->win, ColormapChangeMask | EnterWindowMask |
@@ -116,24 +123,23 @@ client_new(Window win, struct screen_ctx *sc, int mapped)
 	client_transient(cc);
 
 	/* Notify client of its configuration. */
-	xu_configure(cc);
+	client_config(cc);
 
 	(state == IconicState) ? client_hide(cc) : client_unhide(cc);
-	xu_setstate(cc, cc->state);
-
-	XSync(X_Dpy, False);
-	XUngrabServer(X_Dpy);
 
 	TAILQ_INSERT_TAIL(&sc->mruq, cc, mru_entry);
 	TAILQ_INSERT_TAIL(&Clientq, cc, entry);
 
 	xu_ewmh_net_client_list(sc);
 
-	client_gethints(cc);
-	client_update(cc);
+	client_wm_protocols(cc);
+	xu_ewmh_restore_net_wm_state(cc);
 
 	if (mapped)
 		group_autogroup(cc);
+
+	XSync(X_Dpy, False);
+	XUngrabServer(X_Dpy);
 
 	return (cc);
 }
@@ -144,12 +150,10 @@ client_delete(struct client_ctx *cc)
 	struct screen_ctx	*sc = cc->sc;
 	struct winname		*wn;
 
-	group_client_delete(cc);
-
 	XGrabServer(X_Dpy);
-	xu_setstate(cc, WithdrawnState);
+	cc->state = WithdrawnState;
+	xu_set_wm_state(cc->win, cc->state);
 	XRemoveFromSaveSet(X_Dpy, cc->win);
-
 	XSync(X_Dpy, False);
 	XUngrabServer(X_Dpy);
 
@@ -158,10 +162,17 @@ client_delete(struct client_ctx *cc)
 
 	xu_ewmh_net_client_list(sc);
 
+	if (cc->group != NULL)
+		TAILQ_REMOVE(&cc->group->clients, cc, group_entry);
+
 	if (cc == client_current())
 		client_none(sc);
 
 	XFree(cc->size);
+	if (cc->app_name != NULL)
+		XFree(cc->app_name);
+	if (cc->app_class != NULL)
+		XFree(cc->app_class);
 
 	while ((wn = TAILQ_FIRST(&cc->nameq)) != NULL) {
 		TAILQ_REMOVE(&cc->nameq, wn, entry);
@@ -169,7 +180,6 @@ client_delete(struct client_ctx *cc)
 		free(wn);
 	}
 
-	client_freehints(cc);
 	free(cc);
 }
 
@@ -203,7 +213,7 @@ client_setactive(struct client_ctx *cc, int fg)
 		XInstallColormap(X_Dpy, cc->colormap);
 		XSetInputFocus(X_Dpy, cc->win,
 		    RevertToPointerRoot, CurrentTime);
-		conf_grab_mouse(cc);
+		conf_grab_mouse(cc->win);
 		/*
 		 * If we're in the middle of alt-tabbing, don't change
 		 * the order please.
@@ -292,6 +302,7 @@ client_maximize(struct client_ctx *cc)
 
 resize:
 	client_resize(cc, 0);
+	xu_ewmh_set_net_wm_state(cc);
 }
 
 void
@@ -332,6 +343,7 @@ client_vmaximize(struct client_ctx *cc)
 
 resize:
 	client_resize(cc, 0);
+	xu_ewmh_set_net_wm_state(cc);
 }
 
 void
@@ -372,6 +384,7 @@ client_hmaximize(struct client_ctx *cc)
 
 resize:
 	client_resize(cc, 0);
+	xu_ewmh_set_net_wm_state(cc);
 }
 
 void
@@ -380,20 +393,21 @@ client_resize(struct client_ctx *cc, int reset)
 	if (reset) {
 		cc->flags &= ~CLIENT_MAXIMIZED;
 		cc->bwidth = Conf.bwidth;
+		xu_ewmh_set_net_wm_state(cc);
 	}
 
 	client_draw_border(cc);
 
 	XMoveResizeWindow(X_Dpy, cc->win, cc->geom.x,
 	    cc->geom.y, cc->geom.w, cc->geom.h);
-	xu_configure(cc);
+	client_config(cc);
 }
 
 void
 client_move(struct client_ctx *cc)
 {
 	XMoveWindow(X_Dpy, cc->win, cc->geom.x, cc->geom.y);
-	xu_configure(cc);
+	client_config(cc);
 }
 
 void
@@ -406,6 +420,26 @@ void
 client_raise(struct client_ctx *cc)
 {
 	XRaiseWindow(X_Dpy, cc->win);
+}
+
+void
+client_config(struct client_ctx *cc)
+{
+	XConfigureEvent	 cn;
+
+	bzero(&cn, sizeof(cn));
+	cn.type = ConfigureNotify;
+	cn.event = cc->win;
+	cn.window = cc->win;
+	cn.x = cc->geom.x;
+	cn.y = cc->geom.y;
+	cn.width = cc->geom.w;
+	cn.height = cc->geom.h;
+	cn.border_width = cc->bwidth;
+	cn.above = None;
+	cn.override_redirect = 0;
+
+	XSendEvent(X_Dpy, cc->win, False, StructureNotifyMask, (XEvent *)&cn);
 }
 
 void
@@ -440,12 +474,12 @@ client_ptrsave(struct client_ctx *cc)
 void
 client_hide(struct client_ctx *cc)
 {
-	/* XXX - add wm_state stuff */
 	XUnmapWindow(X_Dpy, cc->win);
 
 	cc->active = 0;
 	cc->flags |= CLIENT_HIDDEN;
-	xu_setstate(cc, IconicState);
+	cc->state = IconicState;
+	xu_set_wm_state(cc->win, cc->state);
 
 	if (cc == client_current())
 		client_none(cc->sc);
@@ -457,7 +491,8 @@ client_unhide(struct client_ctx *cc)
 	XMapRaised(X_Dpy, cc->win);
 
 	cc->flags &= ~CLIENT_HIDDEN;
-	xu_setstate(cc, NormalState);
+	cc->state = NormalState;
+	xu_set_wm_state(cc->win, cc->state);
 	client_draw_border(cc);
 }
 
@@ -470,48 +505,60 @@ client_draw_border(struct client_ctx *cc)
 	if (cc->active)
 		switch (cc->flags & CLIENT_HIGHLIGHT) {
 		case CLIENT_GROUP:
-			pixel = sc->color[CWM_COLOR_BORDER_GROUP];
+			pixel = sc->xftcolor[CWM_COLOR_BORDER_GROUP].pixel;
 			break;
 		case CLIENT_UNGROUP:
-			pixel = sc->color[CWM_COLOR_BORDER_UNGROUP];
+			pixel = sc->xftcolor[CWM_COLOR_BORDER_UNGROUP].pixel;
 			break;
 		default:
-			pixel = sc->color[CWM_COLOR_BORDER_ACTIVE];
+			pixel = sc->xftcolor[CWM_COLOR_BORDER_ACTIVE].pixel;
 			break;
 		}
 	else
-		pixel = sc->color[CWM_COLOR_BORDER_INACTIVE];
+		pixel = sc->xftcolor[CWM_COLOR_BORDER_INACTIVE].pixel;
 
 	XSetWindowBorderWidth(X_Dpy, cc->win, cc->bwidth);
 	XSetWindowBorder(X_Dpy, cc->win, pixel);
 }
 
 static void
-client_update(struct client_ctx *cc)
+client_wm_protocols(struct client_ctx *cc)
 {
 	Atom	*p;
-	int	 i;
-	long	 n;
+	int	 i, j;
 
-	if ((n = xu_getprop(cc->win, cwmh[WM_PROTOCOLS].atom,
-		 XA_ATOM, 20L, (u_char **)&p)) <= 0)
-		return;
+	if (XGetWMProtocols(X_Dpy, cc->win, &p, &j)) {
+		for (i = 0; i < j; i++) {
+			if (p[i] == cwmh[WM_DELETE_WINDOW])
+				cc->xproto |= _WM_DELETE_WINDOW;
+			else if (p[i] == cwmh[WM_TAKE_FOCUS])
+				cc->xproto |= _WM_TAKE_FOCUS;
+		}
+		XFree(p);
+	}
+}
 
-	for (i = 0; i < n; i++)
-		if (p[i] == cwmh[WM_DELETE_WINDOW].atom)
-			cc->xproto |= CLIENT_PROTO_DELETE;
-		else if (p[i] == cwmh[WM_TAKE_FOCUS].atom)
-			cc->xproto |= CLIENT_PROTO_TAKEFOCUS;
+void
+client_msg(struct client_ctx *cc, Atom proto)
+{
+	XClientMessageEvent	 cm;
 
-	XFree(p);
+	bzero(&cm, sizeof(cm));
+	cm.type = ClientMessage;
+	cm.window = cc->win;
+	cm.message_type = cwmh[WM_PROTOCOLS];
+	cm.format = 32;
+	cm.data.l[0] = proto;
+	cm.data.l[1] = CurrentTime;
+
+	XSendEvent(X_Dpy, cc->win, False, NoEventMask, (XEvent *)&cm);
 }
 
 void
 client_send_delete(struct client_ctx *cc)
 {
-	if (cc->xproto & CLIENT_PROTO_DELETE)
-		xu_sendmsg(cc->win,
-		    cwmh[WM_PROTOCOLS].atom, cwmh[WM_DELETE_WINDOW].atom);
+	if (cc->xproto & _WM_DELETE_WINDOW)
+		client_msg(cc, cwmh[WM_DELETE_WINDOW]);
 	else
 		XKillClient(X_Dpy, cc->win);
 }
@@ -522,7 +569,7 @@ client_setname(struct client_ctx *cc)
 	struct winname	*wn;
 	char		*newname;
 
-	if (!xu_getstrprop(cc->win, ewmh[_NET_WM_NAME].atom, &newname))
+	if (!xu_getstrprop(cc->win, ewmh[_NET_WM_NAME], &newname))
 		if (!xu_getstrprop(cc->win, XA_WM_NAME, &newname))
 			newname = xstrdup("");
 
@@ -566,7 +613,7 @@ client_cycle(struct screen_ctx *sc, int flags)
 		return;
 
 	if (oldcc == NULL)
-		oldcc = (flags & CWM_RCYCLE ? 
+		oldcc = (flags & CWM_RCYCLE ?
 		    TAILQ_LAST(&sc->mruq, cycle_entry_q) :
 		    TAILQ_FIRST(&sc->mruq));
 
@@ -598,7 +645,7 @@ client_cycle(struct screen_ctx *sc, int flags)
 }
 
 void
-client_cycle_leave(struct screen_ctx *sc, struct client_ctx *cc) 
+client_cycle_leave(struct screen_ctx *sc, struct client_ctx *cc)
 {
 	sc->cycling = 0;
 
@@ -789,33 +836,16 @@ client_applysizehints(struct client_ctx *cc)
 }
 
 static void
-client_gethints(struct client_ctx *cc)
+client_getmwmhints(struct client_ctx *cc)
 {
-	XClassHint		 xch;
 	struct mwm_hints	*mwmh;
 
-	if (XGetClassHint(X_Dpy, cc->win, &xch)) {
-		if (xch.res_name != NULL)
-			cc->app_name = xch.res_name;
-		if (xch.res_class != NULL)
-			cc->app_class = xch.res_class;
-	}
-
-	if (xu_getprop(cc->win, cwmh[_MOTIF_WM_HINTS].atom, _MOTIF_WM_HINTS,
+	if (xu_getprop(cc->win, cwmh[_MOTIF_WM_HINTS], cwmh[_MOTIF_WM_HINTS],
 	    PROP_MWM_HINTS_ELEMENTS, (u_char **)&mwmh) == MWM_NUMHINTS)
 		if (mwmh->flags & MWM_HINTS_DECORATIONS &&
 		    !(mwmh->decorations & MWM_DECOR_ALL) &&
 		    !(mwmh->decorations & MWM_DECOR_BORDER))
 			cc->bwidth = 0;
-}
-
-static void
-client_freehints(struct client_ctx *cc)
-{
-	if (cc->app_name != NULL)
-		XFree(cc->app_name);
-	if (cc->app_class != NULL)
-		XFree(cc->app_class);
 }
 
 void

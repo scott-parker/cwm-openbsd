@@ -1,4 +1,4 @@
-.\"	$OpenBSD: cwmrc.5,v 1.52 2013/01/08 15:16:05 okan Exp $
+.\"	$OpenBSD: cwmrc.5,v 1.54 2013/07/08 18:39:20 okan Exp $
 .\"
 .\" Copyright (c) 2004,2005 Marius Aamodt Eriksen <marius@monkey.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: January 8 2013 $
+.Dd $Mdocdate: July 8 2013 $
 .Dt CWMRC 5
 .Os
 .Sh NAME
@@ -206,6 +206,10 @@ Left mouse button.
 Middle mouse button.
 .It 3
 Right mouse button.
+.It 4
+Scroll up mouse button.
+.It 5
+Scroll down mouse button.
 .El
 .Pp
 The
@@ -459,6 +463,10 @@ Raise current window.
 Hide current window.
 .It window_grouptoggle
 Toggle group membership of current window.
+.It cyclegroup
+Forward cycle through groups.
+.It rcyclegroup
+Reverse cycle through groups.
 .It menu_group
 Launch group list.
 .It menu_unhide

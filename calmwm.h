@@ -15,7 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: calmwm.h,v 1.186 2013/01/08 15:16:04 okan Exp $
+ * $OpenBSD: calmwm.h,v 1.220 2013/07/16 14:04:44 okan Exp $
  */
 
 #ifndef _CALMWM_H_
@@ -87,20 +87,25 @@ union arg {
 	int	 i;
 };
 
-enum menucolor {
-	CWM_COLOR_MENU_FG,
-	CWM_COLOR_MENU_BG,
-	CWM_COLOR_MENU_FONT,
-	CWM_COLOR_MENU_FONT_SEL,
-	CWM_COLOR_MENU_MAX
+enum cursor_font {
+	CF_DEFAULT,
+	CF_MOVE,
+	CF_NORMAL,
+	CF_QUESTION,
+	CF_RESIZE,
+	CF_NITEMS
 };
 
-enum bordercolor {
+enum color {
 	CWM_COLOR_BORDER_ACTIVE,
 	CWM_COLOR_BORDER_INACTIVE,
 	CWM_COLOR_BORDER_GROUP,
 	CWM_COLOR_BORDER_UNGROUP,
-	CWM_COLOR_BORDER_MAX
+	CWM_COLOR_MENU_FG,
+	CWM_COLOR_MENU_BG,
+	CWM_COLOR_MENU_FONT,
+	CWM_COLOR_MENU_FONT_SEL,
+	CWM_COLOR_NITEMS
 };
 
 struct geom {
@@ -122,6 +127,11 @@ struct winname {
 	char			*name;
 };
 TAILQ_HEAD(winname_q, winname);
+
+enum wm_protocols {
+	_WM_DELETE_WINDOW	= 0x0001,
+	_WM_TAKE_FOCUS		= 0x0002,
+};
 
 struct client_ctx {
 	TAILQ_ENTRY(client_ctx) entry;
@@ -149,9 +159,7 @@ struct client_ctx {
 		int		 x;	/* x position */
 		int		 y;	/* y position */
 	} ptr;
-#define CLIENT_PROTO_DELETE		 0x0001
-#define CLIENT_PROTO_TAKEFOCUS		 0x0002
-	int			 xproto;
+	enum wm_protocols	 xproto;
 #define CLIENT_HIDDEN			0x0001
 #define CLIENT_IGNORE			0x0002
 #define CLIENT_VMAXIMIZED		0x0004
@@ -207,18 +215,17 @@ TAILQ_HEAD(autogroupwin_q, autogroupwin);
 
 struct screen_ctx {
 	TAILQ_ENTRY(screen_ctx)	 entry;
-	u_int			 which;
+	int			 which;
 	Visual			*visual;
 	Colormap		 colormap;
 	Window			 rootwin;
 	Window			 menuwin;
-	unsigned long		 color[CWM_COLOR_BORDER_MAX];
 	int			 cycling;
 	struct geom		 view; /* viewable area */
 	struct geom		 work; /* workable area, gap-applied */
 	struct gap		 gap;
 	struct cycle_entry_q	 mruq;
-	XftColor		 xftcolor[CWM_COLOR_MENU_MAX];
+	XftColor		 xftcolor[CWM_COLOR_NITEMS];
 	XftDraw			*xftdraw;
 	XftFont			*xftfont;
 	int			 xinerama_no;
@@ -237,8 +244,8 @@ struct keybinding {
 	TAILQ_ENTRY(keybinding)	 entry;
 	void			(*callback)(struct client_ctx *, union arg *);
 	union arg		 argument;
-	int			 modmask;
-	int			 keysym;
+	u_int			 modmask;
+	KeySym			 keysym;
 	int			 keycode;
 #define KBFLAG_NEEDCLIENT	 0x0001
 	int			 flags;
@@ -249,11 +256,11 @@ TAILQ_HEAD(keybinding_q, keybinding);
 struct mousebinding {
 	TAILQ_ENTRY(mousebinding)	entry;
 	void			 	(*callback)(struct client_ctx *, void *);
-	int				modmask;
-	int			 	button;
+	u_int				modmask;
+	u_int			 	button;
 #define MOUSEBIND_CTX_ROOT		0x0001
 #define MOUSEBIND_CTX_WIN		0x0002
-	int				context;
+	int				flags;
 };
 TAILQ_HEAD(mousebinding_q, mousebinding);
 
@@ -292,13 +299,13 @@ struct conf {
 #define	CONF_SNAPDIST			0
 	int			 snapdist;
 	struct gap		 gap;
-	char			*color[CWM_COLOR_BORDER_MAX];
-	char		 	*menucolor[CWM_COLOR_MENU_MAX];
+	char			*color[CWM_COLOR_NITEMS];
 	char			 termpath[MAXPATHLEN];
 	char			 lockpath[MAXPATHLEN];
 	char			 known_hosts[MAXPATHLEN];
 #define	CONF_FONT			"sans-serif:pixelsize=14:bold"
 	char			*font;
+	Cursor			 cursor[CF_NITEMS];
 };
 
 /* MWM hints */
@@ -313,9 +320,57 @@ struct mwm_hints {
 #define	MWM_DECOR_ALL		(1<<0)
 #define	MWM_DECOR_BORDER	(1<<1)
 
+extern Display				*X_Dpy;
+extern struct screen_ctx_q		 Screenq;
+extern struct client_ctx_q		 Clientq;
+extern struct conf			 Conf;
+extern char				*homedir;
+extern int				 HasRandr, Randr_ev;
+
+enum {
+	WM_STATE,
+	WM_DELETE_WINDOW,
+	WM_TAKE_FOCUS,
+	WM_PROTOCOLS,
+	_MOTIF_WM_HINTS,
+	UTF8_STRING,
+	WM_CHANGE_STATE,
+	CWMH_NITEMS
+};
+enum {
+	_NET_SUPPORTED,
+	_NET_SUPPORTING_WM_CHECK,
+	_NET_ACTIVE_WINDOW,
+	_NET_CLIENT_LIST,
+	_NET_NUMBER_OF_DESKTOPS,
+	_NET_CURRENT_DESKTOP,
+	_NET_DESKTOP_VIEWPORT,
+	_NET_DESKTOP_GEOMETRY,
+	_NET_VIRTUAL_ROOTS,
+	_NET_SHOWING_DESKTOP,
+	_NET_DESKTOP_NAMES,
+	_NET_WORKAREA,
+	_NET_WM_NAME,
+	_NET_WM_DESKTOP,
+	_NET_CLOSE_WINDOW,
+	_NET_WM_STATE,
+#define	_NET_WM_STATES_NITEMS	2
+	_NET_WM_STATE_MAXIMIZED_VERT,
+	_NET_WM_STATE_MAXIMIZED_HORZ,
+	EWMH_NITEMS
+};
+enum {
+	_NET_WM_STATE_REMOVE,
+	_NET_WM_STATE_ADD,
+	_NET_WM_STATE_TOGGLE
+};
+extern Atom				 cwmh[CWMH_NITEMS];
+extern Atom				 ewmh[EWMH_NITEMS];
+
 __dead void		 usage(void);
 
 void			 client_applysizehints(struct client_ctx *);
+void			 client_config(struct client_ctx *);
 struct client_ctx	*client_current(void);
 void			 client_cycle(struct screen_ctx *, int);
 void			 client_cycle_leave(struct screen_ctx *,
@@ -332,8 +387,9 @@ void			 client_leave(struct client_ctx *);
 void			 client_lower(struct client_ctx *);
 void			 client_map(struct client_ctx *);
 void			 client_maximize(struct client_ctx *);
+void			 client_msg(struct client_ctx *, Atom);
 void			 client_move(struct client_ctx *);
-struct client_ctx	*client_new(Window, struct screen_ctx *, int);
+struct client_ctx	*client_init(Window, struct screen_ctx *, int);
 void			 client_ptrsave(struct client_ctx *);
 void			 client_ptrwarp(struct client_ctx *);
 void			 client_raise(struct client_ctx *);
@@ -350,12 +406,10 @@ void			 client_warp(struct client_ctx *);
 
 void			 group_alltoggle(struct screen_ctx *);
 void			 group_autogroup(struct client_ctx *);
-void			 group_client_delete(struct client_ctx *);
 void			 group_cycle(struct screen_ctx *, int);
 void			 group_hidetoggle(struct screen_ctx *, int);
 void			 group_init(struct screen_ctx *);
-void			 group_make_autogroup(struct conf *, char *, int);
-void			 group_menu(XButtonEvent *);
+void			 group_menu(struct screen_ctx *);
 void			 group_movetogroup(struct client_ctx *, int);
 void			 group_only(struct screen_ctx *, int);
 void			 group_sticky(struct client_ctx *);
@@ -377,7 +431,7 @@ void			 search_print_client(struct menu *, int);
 
 struct geom		 screen_find_xinerama(struct screen_ctx *, int, int);
 struct screen_ctx	*screen_fromroot(Window);
-void			 screen_init(struct screen_ctx *, u_int);
+void			 screen_init(int);
 void			 screen_update_geometry(struct screen_ctx *);
 void			 screen_updatestackingorder(struct screen_ctx *);
 
@@ -398,6 +452,8 @@ void			 kbfunc_client_label(struct client_ctx *, union arg *);
 void			 kbfunc_client_lower(struct client_ctx *, union arg *);
 void			 kbfunc_client_maximize(struct client_ctx *,
 			     union arg *);
+void			 kbfunc_client_moveresize(struct client_ctx *,
+			     union arg *);
 void			 kbfunc_client_movetogroup(struct client_ctx *,
 			     union arg *);
 void			 kbfunc_client_nogroup(struct client_ctx *,
@@ -411,76 +467,67 @@ void			 kbfunc_cmdexec(struct client_ctx *, union arg *);
 void			 kbfunc_exec(struct client_ctx *, union arg *);
 void			 kbfunc_lock(struct client_ctx *, union arg *);
 void			 kbfunc_menu_search(struct client_ctx *, union arg *);
-void			 kbfunc_moveresize(struct client_ctx *, union arg *);
 void			 kbfunc_quit_wm(struct client_ctx *, union arg *);
 void			 kbfunc_restart(struct client_ctx *, union arg *);
 void			 kbfunc_ssh(struct client_ctx *, union arg *);
 void			 kbfunc_term(struct client_ctx *, union arg *);
 void 			 kbfunc_tile(struct client_ctx *, union arg *);
 
+void			 mousefunc_client_cyclegroup(struct client_ctx *,
+			    void *);
+void			 mousefunc_client_grouptoggle(struct client_ctx *,
+			    void *);
+void			 mousefunc_client_hide(struct client_ctx *, void *);
+void			 mousefunc_client_lower(struct client_ctx *, void *);
+void			 mousefunc_client_move(struct client_ctx *, void *);
+void			 mousefunc_client_raise(struct client_ctx *, void *);
+void			 mousefunc_client_rcyclegroup(struct client_ctx *,
+    			   void *);
+void			 mousefunc_client_resize(struct client_ctx *, void *);
 void			 mousefunc_menu_cmd(struct client_ctx *, void *);
 void			 mousefunc_menu_group(struct client_ctx *, void *);
 void			 mousefunc_menu_unhide(struct client_ctx *, void *);
-void			 mousefunc_window_grouptoggle(struct client_ctx *,
-			    void *);
-void			 mousefunc_window_hide(struct client_ctx *, void *);
-void			 mousefunc_window_lower(struct client_ctx *, void *);
-void			 mousefunc_window_move(struct client_ctx *, void *);
-void			 mousefunc_window_raise(struct client_ctx *, void *);
-void			 mousefunc_window_resize(struct client_ctx *, void *);
 
 struct menu  		*menu_filter(struct screen_ctx *, struct menu_q *,
 			     char *, char *, int,
 			     void (*)(struct menu_q *, struct menu_q *, char *),
 			     void (*)(struct menu *, int));
-void			 menu_init(struct screen_ctx *);
 void			 menuq_clear(struct menu_q *);
 
 int			 parse_config(const char *, struct conf *);
 
-void			 conf_bindname(struct conf *, char *, char *);
+void			 conf_atoms(void);
+void			 conf_autogroup(struct conf *, int, char *);
+void			 conf_bind_kbd(struct conf *, char *, char *);
+int			 conf_bind_mouse(struct conf *, char *, char *);
 void			 conf_clear(struct conf *);
 void			 conf_client(struct client_ctx *);
 void			 conf_cmd_add(struct conf *, char *, char *);
-void			 conf_color(struct conf *, struct screen_ctx *);
-void			 conf_font(struct conf *, struct screen_ctx *);
-void			 conf_gap(struct conf *, struct screen_ctx *);
-void			 conf_grab(struct conf *, struct keybinding *);
-void			 conf_grab_mouse(struct client_ctx *);
+void			 conf_cursor(struct conf *);
+void			 conf_grab_kbd(Window);
+void			 conf_grab_mouse(Window);
 void			 conf_init(struct conf *);
-void			 conf_mousebind(struct conf *, char *, char *);
-void			 conf_ungrab(struct conf *, struct keybinding *);
-
-int			 font_ascent(struct screen_ctx *);
-int			 font_descent(struct screen_ctx *);
-void			 font_draw(struct screen_ctx *, const char *, int,
-			     Drawable, int, int, int);
-u_int			 font_height(struct screen_ctx *);
-void			 font_init(struct screen_ctx *, const char *,
-			     const char **);
-int			 font_width(struct screen_ctx *, const char *, int);
+void			 conf_ignore(struct conf *, char *);
+void			 conf_screen(struct screen_ctx *);
 
 void			 xev_loop(void);
 
 void			 xu_btn_grab(Window, int, u_int);
 void			 xu_btn_ungrab(Window, int, u_int);
-void			 xu_configure(struct client_ctx *);
-void			 xu_getatoms(void);
-unsigned long		 xu_getcolor(struct screen_ctx *, char *);
 int			 xu_getprop(Window, Atom, Atom, long, u_char **);
-int			 xu_getstate(struct client_ctx *, int *);
+int			 xu_get_wm_state(Window, int *);
 int			 xu_getstrprop(Window, Atom, char **);
-void			 xu_key_grab(Window, int, int);
-void			 xu_key_ungrab(Window, int, int);
+void			 xu_key_grab(Window, u_int, KeySym);
 void			 xu_ptr_getpos(Window, int *, int *);
-int			 xu_ptr_grab(Window, int, Cursor);
-int			 xu_ptr_regrab(int, Cursor);
+int			 xu_ptr_grab(Window, u_int, Cursor);
+int			 xu_ptr_regrab(u_int, Cursor);
 void			 xu_ptr_setpos(Window, int, int);
 void			 xu_ptr_ungrab(void);
-void			 xu_sendmsg(Window, Atom, long);
-void			 xu_setstate(struct client_ctx *, int);
-void 			 xu_xorcolor(XRenderColor, XRenderColor,
-			     XRenderColor *);
+void			 xu_set_wm_state(Window win, int);
+void			 xu_xft_draw(struct screen_ctx *, const char *,
+			     int, int, int);
+int			 xu_xft_width(XftFont *, const char *, int);
+void 			 xu_xorcolor(XftColor, XftColor, XftColor *);
 
 void			 xu_ewmh_net_supported(struct screen_ctx *);
 void			 xu_ewmh_net_supported_wm_check(struct screen_ctx *);
@@ -497,6 +544,11 @@ void			 xu_ewmh_net_desktop_names(struct screen_ctx *, char *,
 			     int);
 
 void			 xu_ewmh_net_wm_desktop(struct client_ctx *);
+Atom 			*xu_ewmh_get_net_wm_state(struct client_ctx *, int *);
+void 			 xu_ewmh_handle_net_wm_state_msg(struct client_ctx *,
+			     int, Atom , Atom);
+void 			 xu_ewmh_set_net_wm_state(struct client_ctx *);
+void 			 xu_ewmh_restore_net_wm_state(struct client_ctx *);
 
 void			 u_exec(char *);
 void			 u_spawn(char *);
@@ -507,54 +559,5 @@ char			*xstrdup(const char *);
 int			 xasprintf(char **, const char *, ...)
 			    __attribute__((__format__ (printf, 2, 3)))
 			    __attribute__((__nonnull__ (2)));
-
-/* Externs */
-extern Display				*X_Dpy;
-
-extern Cursor				 Cursor_default;
-extern Cursor				 Cursor_move;
-extern Cursor				 Cursor_normal;
-extern Cursor				 Cursor_question;
-extern Cursor				 Cursor_resize;
-
-extern struct screen_ctx_q		 Screenq;
-extern struct client_ctx_q		 Clientq;
-extern struct conf			 Conf;
-extern char				*homedir;
-
-extern int				 HasRandr, Randr_ev;
-
-enum {
-	WM_STATE,
-	WM_DELETE_WINDOW,
-	WM_TAKE_FOCUS,
-	WM_PROTOCOLS,
-	_MOTIF_WM_HINTS,
-	UTF8_STRING,
-	CWMH_NITEMS
-};
-enum {
-	_NET_SUPPORTED,
-	_NET_SUPPORTING_WM_CHECK,
-	_NET_ACTIVE_WINDOW,
-	_NET_CLIENT_LIST,
-	_NET_NUMBER_OF_DESKTOPS,
-	_NET_CURRENT_DESKTOP,
-	_NET_DESKTOP_VIEWPORT,
-	_NET_DESKTOP_GEOMETRY,
-	_NET_VIRTUAL_ROOTS,
-	_NET_SHOWING_DESKTOP,
-	_NET_DESKTOP_NAMES,
-	_NET_WORKAREA,
-	_NET_WM_NAME,
-	_NET_WM_DESKTOP,
-	EWMH_NITEMS
-};
-struct atom_ctx {
-	char	*name;
-	Atom	 atom;
-};
-extern struct atom_ctx			 cwmh[CWMH_NITEMS];
-extern struct atom_ctx			 ewmh[EWMH_NITEMS];
 
 #endif /* _CALMWM_H_ */

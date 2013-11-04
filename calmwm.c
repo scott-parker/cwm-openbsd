@@ -15,7 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: calmwm.c,v 1.72 2012/12/18 00:14:41 okan Exp $
+ * $OpenBSD: calmwm.c,v 1.80 2013/07/15 14:50:44 okan Exp $
  */
 
 #include <sys/param.h>
@@ -37,12 +37,8 @@
 
 char				**cwm_argv;
 Display				*X_Dpy;
-
-Cursor				 Cursor_default;
-Cursor				 Cursor_move;
-Cursor				 Cursor_normal;
-Cursor				 Cursor_question;
-Cursor				 Cursor_resize;
+Atom				 cwmh[CWMH_NITEMS];
+Atom				 ewmh[EWMH_NITEMS];
 
 struct screen_ctx_q		 Screenq = TAILQ_HEAD_INITIALIZER(Screenq);
 struct client_ctx_q		 Clientq = TAILQ_HEAD_INITIALIZER(Clientq);
@@ -52,11 +48,10 @@ struct conf			 Conf;
 char				*homedir;
 
 static void	sigchld_cb(int);
-static void	dpy_init(const char *);
 static int	x_errorhandler(Display *, XErrorEvent *);
-static int	x_wmerrorhandler(Display *, XErrorEvent *);
-static void	x_setup(void);
+static void	x_init(const char *);
 static void	x_teardown(void);
+static int	x_wmerrorhandler(Display *, XErrorEvent *);
 
 int
 main(int argc, char **argv)
@@ -109,15 +104,12 @@ main(int argc, char **argv)
 		conf_path = NULL;
 	}
 
-	dpy_init(display_name);
-
 	conf_init(&Conf);
 	if (conf_path && (parse_config(conf_path, &Conf) == -1))
 		warnx("config file %s has errors, not loading", conf_path);
 	free(conf_path);
 
-	xu_getatoms();
-	x_setup();
+	x_init(display_name);
 	xev_loop();
 	x_teardown();
 
@@ -125,15 +117,12 @@ main(int argc, char **argv)
 }
 
 static void
-dpy_init(const char *dpyname)
+x_init(const char *dpyname)
 {
 	int	i;
 
-	XSetErrorHandler(x_errorhandler);
-
 	if ((X_Dpy = XOpenDisplay(dpyname)) == NULL)
-		errx(1, "unable to open display \"%s\"",
-		    XDisplayName(dpyname));
+		errx(1, "unable to open display \"%s\"", XDisplayName(dpyname));
 
 	XSetErrorHandler(x_wmerrorhandler);
 	XSelectInput(X_Dpy, DefaultRootWindow(X_Dpy), SubstructureRedirectMask);
@@ -141,33 +130,13 @@ dpy_init(const char *dpyname)
 	XSetErrorHandler(x_errorhandler);
 
 	HasRandr = XRRQueryExtension(X_Dpy, &Randr_ev, &i);
-}
 
-static void
-x_setup(void)
-{
-	struct screen_ctx	*sc;
-	struct keybinding	*kb;
-	int			 i;
+	conf_atoms();
 
-	Cursor_default = XCreateFontCursor(X_Dpy, XC_X_cursor);
-	Cursor_move = XCreateFontCursor(X_Dpy, XC_fleur);
-	Cursor_normal = XCreateFontCursor(X_Dpy, XC_left_ptr);
-	Cursor_question = XCreateFontCursor(X_Dpy, XC_question_arrow);
-	Cursor_resize = XCreateFontCursor(X_Dpy, XC_bottom_right_corner);
+	conf_cursor(&Conf);
 
-	for (i = 0; i < ScreenCount(X_Dpy); i++) {
-		sc = xcalloc(1, sizeof(*sc));
-		screen_init(sc, i);
-		TAILQ_INSERT_TAIL(&Screenq, sc, entry);
-	}
-
-	/*
-	 * XXX key grabs weren't done before, since Screenq was empty,
-	 * do them here for now (this needs changing).
-	 */
-	TAILQ_FOREACH(kb, &Conf.keybindingq, entry)
-		conf_grab(&Conf, kb);
+	for (i = 0; i < ScreenCount(X_Dpy); i++)
+		screen_init(i);
 }
 
 static void
@@ -187,7 +156,7 @@ x_wmerrorhandler(Display *dpy, XErrorEvent *e)
 static int
 x_errorhandler(Display *dpy, XErrorEvent *e)
 {
-#if DEBUG
+#ifdef DEBUG
 	char msg[80], number[80], req[80];
 
 	XGetErrorText(X_Dpy, e->error_code, msg, sizeof(msg));

@@ -16,7 +16,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: mousefunc.c,v 1.44 2013/01/02 21:41:14 okan Exp $
+ * $OpenBSD: mousefunc.c,v 1.56 2013/07/09 01:24:49 okan Exp $
  */
 
 #include <sys/param.h>
@@ -31,14 +31,12 @@
 
 #include "calmwm.h"
 
-static int	mousefunc_sweep_calc(struct client_ctx *, int, int, int, int);
+static void	mousefunc_sweep_calc(struct client_ctx *, int, int, int, int);
 static void	mousefunc_sweep_draw(struct client_ctx *);
 
-static int
+static void
 mousefunc_sweep_calc(struct client_ctx *cc, int x, int y, int mx, int my)
 {
-	int	 width = cc->geom.w, height = cc->geom.h;
-
 	cc->geom.w = abs(x - mx) - cc->bwidth;
 	cc->geom.h = abs(y - my) - cc->bwidth;
 
@@ -46,36 +44,31 @@ mousefunc_sweep_calc(struct client_ctx *cc, int x, int y, int mx, int my)
 
 	cc->geom.x = x <= mx ? x : x - cc->geom.w;
 	cc->geom.y = y <= my ? y : y - cc->geom.h;
-
-	return (width != cc->geom.w || height != cc->geom.h);
 }
 
 static void
 mousefunc_sweep_draw(struct client_ctx *cc)
 {
 	struct screen_ctx	*sc = cc->sc;
-	char			 asize[10]; /* fits "nnnnxnnnn\0" */
-	int			 width, width_size, width_name;
+	char			 asize[14]; /* fits " nnnn x nnnn \0" */
 
-	(void)snprintf(asize, sizeof(asize), "%dx%d",
+	(void)snprintf(asize, sizeof(asize), " %4d x %-4d ",
 	    (cc->geom.w - cc->hint.basew) / cc->hint.incw,
 	    (cc->geom.h - cc->hint.baseh) / cc->hint.inch);
-	width_size = font_width(sc, asize, strlen(asize)) + 4;
-	width_name = font_width(sc, cc->name, strlen(cc->name)) + 4;
-	width = MAX(width_size, width_name);
 
 	XReparentWindow(X_Dpy, sc->menuwin, cc->win, 0, 0);
-	XMoveResizeWindow(X_Dpy, sc->menuwin, 0, 0, width, font_height(sc) * 2);
+	XMoveResizeWindow(X_Dpy, sc->menuwin, 0, 0,
+	    xu_xft_width(sc->xftfont, asize, strlen(asize)),
+	    sc->xftfont->height);
 	XMapWindow(X_Dpy, sc->menuwin);
 	XClearWindow(X_Dpy, sc->menuwin);
-	font_draw(sc, cc->name, strlen(cc->name), sc->menuwin, 0,
-	    2, font_ascent(sc) + 1);
-	font_draw(sc, asize, strlen(asize), sc->menuwin, 0,
-	    width / 2 - width_size / 2, font_height(sc) + font_ascent(sc) + 1);
+
+	xu_xft_draw(sc, asize, CWM_COLOR_MENU_FONT,
+	    0, sc->xftfont->ascent + 1);
 }
 
 void
-mousefunc_window_resize(struct client_ctx *cc, void *arg)
+mousefunc_client_resize(struct client_ctx *cc, void *arg)
 {
 	XEvent			 ev;
 	Time			 ltime = 0;
@@ -88,7 +81,7 @@ mousefunc_window_resize(struct client_ctx *cc, void *arg)
 	client_raise(cc);
 	client_ptrsave(cc);
 
-	if (xu_ptr_grab(cc->win, MOUSEMASK, Cursor_resize) < 0)
+	if (xu_ptr_grab(cc->win, MOUSEMASK, Conf.cursor[CF_RESIZE]) < 0)
 		return;
 
 	xu_ptr_setpos(cc->win, cc->geom.w, cc->geom.h);
@@ -102,15 +95,14 @@ mousefunc_window_resize(struct client_ctx *cc, void *arg)
 			client_draw_border(cc);
 			break;
 		case MotionNotify:
-			if (mousefunc_sweep_calc(cc, x, y,
-			    ev.xmotion.x_root, ev.xmotion.y_root))
-				/* Recompute window output */
-				mousefunc_sweep_draw(cc);
+			mousefunc_sweep_calc(cc, x, y,
+			    ev.xmotion.x_root, ev.xmotion.y_root);
 
 			/* don't resize more than 60 times / second */
 			if ((ev.xmotion.time - ltime) > (1000 / 60)) {
 				ltime = ev.xmotion.time;
 				client_resize(cc, 1);
+				mousefunc_sweep_draw(cc);
 			}
 			break;
 		case ButtonRelease:
@@ -133,7 +125,7 @@ mousefunc_window_resize(struct client_ctx *cc, void *arg)
 }
 
 void
-mousefunc_window_move(struct client_ctx *cc, void *arg)
+mousefunc_client_move(struct client_ctx *cc, void *arg)
 {
 	XEvent			 ev;
 	Time			 ltime = 0;
@@ -145,7 +137,7 @@ mousefunc_window_move(struct client_ctx *cc, void *arg)
 	if (cc->flags & CLIENT_FREEZE)
 		return;
 
-	if (xu_ptr_grab(cc->win, MOUSEMASK, Cursor_move) < 0)
+	if (xu_ptr_grab(cc->win, MOUSEMASK, Conf.cursor[CF_MOVE]) < 0)
 		return;
 
 	xu_ptr_getpos(cc->win, &px, &py);
@@ -185,34 +177,46 @@ mousefunc_window_move(struct client_ctx *cc, void *arg)
 }
 
 void
-mousefunc_window_grouptoggle(struct client_ctx *cc, void *arg)
+mousefunc_client_grouptoggle(struct client_ctx *cc, void *arg)
 {
 	group_sticky_toggle_enter(cc);
 }
 
 void
-mousefunc_window_lower(struct client_ctx *cc, void *arg)
+mousefunc_client_lower(struct client_ctx *cc, void *arg)
 {
 	client_ptrsave(cc);
 	client_lower(cc);
 }
 
 void
-mousefunc_window_raise(struct client_ctx *cc, void *arg)
+mousefunc_client_raise(struct client_ctx *cc, void *arg)
 {
 	client_raise(cc);
 }
 
 void
-mousefunc_window_hide(struct client_ctx *cc, void *arg)
+mousefunc_client_hide(struct client_ctx *cc, void *arg)
 {
 	client_hide(cc);
 }
 
 void
+mousefunc_client_cyclegroup(struct client_ctx *cc, void *arg)
+{
+	group_cycle(cc->sc, CWM_CYCLE);
+}
+
+void
+mousefunc_client_rcyclegroup(struct client_ctx *cc, void *arg)
+{
+	group_cycle(cc->sc, CWM_RCYCLE);
+}
+
+void
 mousefunc_menu_group(struct client_ctx *cc, void *arg)
 {
-	group_menu(arg);
+	group_menu(cc->sc);
 }
 
 void
@@ -227,6 +231,7 @@ mousefunc_menu_unhide(struct client_ctx *cc, void *arg)
 	old_cc = client_current();
 
 	TAILQ_INIT(&menuq);
+
 	TAILQ_FOREACH(cc, &Clientq, entry)
 		if (cc->flags & CLIENT_HIDDEN) {
 			wname = (cc->label) ? cc->label : cc->name;
@@ -250,8 +255,9 @@ mousefunc_menu_unhide(struct client_ctx *cc, void *arg)
 		if (old_cc != NULL)
 			client_ptrsave(old_cc);
 		client_ptrwarp(cc);
-	} else
-		menuq_clear(&menuq);
+	}
+
+	menuq_clear(&menuq);
 }
 
 void
@@ -263,6 +269,7 @@ mousefunc_menu_cmd(struct client_ctx *cc, void *arg)
 	struct cmd		*cmd;
 
 	TAILQ_INIT(&menuq);
+
 	TAILQ_FOREACH(cmd, &Conf.cmdq, entry) {
 		mi = xcalloc(1, sizeof(*mi));
 		(void)strlcpy(mi->text, cmd->label, sizeof(mi->text));
@@ -275,6 +282,6 @@ mousefunc_menu_cmd(struct client_ctx *cc, void *arg)
 	mi = menu_filter(sc, &menuq, NULL, NULL, 0, NULL, NULL);
 	if (mi != NULL)
 		u_spawn(((struct cmd *)mi->ctx)->image);
-	else
-		menuq_clear(&menuq);
+
+	menuq_clear(&menuq);
 }

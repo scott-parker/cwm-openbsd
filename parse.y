@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.39 2013/01/04 16:27:58 okan Exp $ */
+/*	$OpenBSD: parse.y,v 1.47 2013/07/16 14:04:44 okan Exp $ */
 
 /*
  * Copyright (c) 2002, 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -42,18 +42,17 @@ static struct file {
 	char			*name;
 	int			 lineno;
 	int			 errors;
-} *file;
-
-struct file		*pushfile(const char *);
-int			 popfile(void);
-int			 yyparse(void);
-int			 yylex(void);
-int			 yyerror(const char *, ...);
-int			 kw_cmp(const void *, const void *);
-int			 lookup(char *);
-int			 lgetc(int);
-int			 lungetc(int);
-int			 findeol(void);
+} *file, *topfile;
+struct file	*pushfile(const char *);
+int		 popfile(void);
+int		 yyparse(void);
+int		 yylex(void);
+int		 yyerror(const char *, ...);
+int		 kw_cmp(const void *, const void *);
+int		 lookup(char *);
+int		 lgetc(int);
+int		 lungetc(int);
+int		 findeol(void);
 
 static struct conf	*conf;
 
@@ -117,12 +116,24 @@ main		: FONTNAME STRING		{
 				conf->flags |= CONF_STICKY_GROUPS;
 		}
 		| BORDERWIDTH NUMBER {
+			if ($2 < 0) {
+				yyerror("invalid borderwidth: %d", $2);
+				YYERROR;
+			}
 			conf->bwidth = $2;
 		}
 		| MOVEAMOUNT NUMBER {
+			if ($2 < 0) {
+				yyerror("invalid movemount: %d", $2);
+				YYERROR;
+			}
 			conf->mamount = $2;
 		}
 		| SNAPDIST NUMBER {
+			if ($2 < 0) {
+				yyerror("invalid snapdist: %d", $2);
+				YYERROR;
+			}
 			conf->snapdist = $2;
 		}
 		| COMMAND STRING string		{
@@ -133,35 +144,39 @@ main		: FONTNAME STRING		{
 		| AUTOGROUP NUMBER STRING	{
 			if ($2 < 0 || $2 > 9) {
 				free($3);
-				yyerror("autogroup number out of range: %d", $2);
+				yyerror("invalid autogroup: %d", $2);
 				YYERROR;
 			}
-
-			group_make_autogroup(conf, $3, $2);
+			conf_autogroup(conf, $2, $3);
 			free($3);
 		}
 		| IGNORE STRING {
-			struct winmatch	*wm;
-
-			wm = xcalloc(1, sizeof(*wm));
-			(void)strlcpy(wm->title, $2, sizeof(wm->title));
-			TAILQ_INSERT_TAIL(&conf->ignoreq, wm, entry);
-
+			conf_ignore(conf, $2);
 			free($2);
 		}
 		| BIND STRING string		{
-			conf_bindname(conf, $2, $3);
+			conf_bind_kbd(conf, $2, $3);
 			free($2);
 			free($3);
 		}
 		| GAP NUMBER NUMBER NUMBER NUMBER {
+			if ($2 < 0 || $3 < 0 || $4 < 0 || $5 < 0) {
+				yyerror("invalid gap: %d %d %d %d",
+				    $2, $3, $4, $5);
+				YYERROR;
+			}
 			conf->gap.top = $2;
 			conf->gap.bottom = $3;
 			conf->gap.left = $4;
 			conf->gap.right = $5;
 		}
 		| MOUSEBIND STRING string	{
-			conf_mousebind(conf, $2, $3);
+			if (!conf_bind_mouse(conf, $2, $3)) {
+				yyerror("invalid mousebind: %s %s", $2, $3);
+				free($2);
+				free($3);
+				YYERROR;
+			}
 			free($2);
 			free($3);
 		}
@@ -187,20 +202,20 @@ colors		: ACTIVEBORDER STRING {
 			conf->color[CWM_COLOR_BORDER_UNGROUP] = $2;
 		}
 		| MENUBG STRING {
-			free(conf->menucolor[CWM_COLOR_MENU_BG]);
-			conf->menucolor[CWM_COLOR_MENU_BG] = $2;
+			free(conf->color[CWM_COLOR_MENU_BG]);
+			conf->color[CWM_COLOR_MENU_BG] = $2;
 		}
 		| MENUFG STRING {
-			free(conf->menucolor[CWM_COLOR_MENU_FG]);
-			conf->menucolor[CWM_COLOR_MENU_FG] = $2;
+			free(conf->color[CWM_COLOR_MENU_FG]);
+			conf->color[CWM_COLOR_MENU_FG] = $2;
 		}
 		| FONTCOLOR STRING {
-			free(conf->menucolor[CWM_COLOR_MENU_FONT]);
-			conf->menucolor[CWM_COLOR_MENU_FONT] = $2;
+			free(conf->color[CWM_COLOR_MENU_FONT]);
+			conf->color[CWM_COLOR_MENU_FONT] = $2;
 		}
 		| FONTSELCOLOR STRING {
-			free(conf->menucolor[CWM_COLOR_MENU_FONT_SEL]);
-			conf->menucolor[CWM_COLOR_MENU_FONT_SEL] = $2;
+			free(conf->color[CWM_COLOR_MENU_FONT_SEL]);
+			conf->color[CWM_COLOR_MENU_FONT_SEL] = $2;
 		}
 		;
 %%
@@ -213,7 +228,7 @@ struct keywords {
 int
 yyerror(const char *fmt, ...)
 {
-	va_list ap;
+	va_list		 ap;
 
 	file->errors++;
 	va_start(ap, fmt);
@@ -297,8 +312,9 @@ lgetc(int quotec)
 
 	if (quotec) {
 		if ((c = getc(file->stream)) == EOF) {
-			yyerror("reached end of file while parsing quoted string");
-			if (popfile() == EOF)
+			yyerror("reached end of file while parsing "
+			    "quoted string");
+			if (file == topfile || popfile() == EOF)
 				return (EOF);
 			return (quotec);
 		}
@@ -316,7 +332,7 @@ lgetc(int quotec)
 	}
 
 	while (c == EOF) {
-		if (popfile() == EOF)
+		if (file == topfile || popfile() == EOF)
 			return (EOF);
 		c = getc(file->stream);
 	}
@@ -345,11 +361,13 @@ findeol(void)
 	int	c;
 
 	parsebuf = NULL;
-	pushback_index = 0;
 
 	/* skip to either EOF or the first real EOL */
 	while (1) {
-		c = lgetc(0);
+		if (pushback_index)
+			c = pushback_buffer[--pushback_index];
+		else
+			c = lgetc(0);
 		if (c == '\n') {
 			file->lineno++;
 			break;
@@ -447,6 +465,7 @@ nodigits:
 		}
 	}
 
+/* Similar to other parse.y copies, but also allows '/' in strings */
 #define allowed_in_string(x) \
 	(isalnum(x) || (ispunct(x) && x != '(' && x != ')' && \
 	x != '{' && x != '}' && x != '<' && x != '>' && \
@@ -484,6 +503,7 @@ pushfile(const char *name)
 	nfile->name = xstrdup(name);
 
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
+		warn("%s", nfile->name);
 		free(nfile->name);
 		free(nfile);
 		return (NULL);
@@ -498,16 +518,15 @@ popfile(void)
 {
 	struct file	*prev;
 
-	if ((prev = TAILQ_PREV(file, files, entry)) != NULL) {
+	if ((prev = TAILQ_PREV(file, files, entry)) != NULL)
 		prev->errors += file->errors;
-		TAILQ_REMOVE(&files, file, entry);
-		fclose(file->stream);
-		free(file->name);
-		free(file);
-		file = prev;
-		return (0);
-	}
-	return (EOF);
+
+	TAILQ_REMOVE(&files, file, entry);
+	fclose(file->stream);
+	free(file->name);
+	free(file);
+	file = prev;
+	return (file ? 0 : EOF);
 }
 
 int
@@ -521,12 +540,12 @@ parse_config(const char *filename, struct conf *xconf)
 		free(conf);
 		return (-1);
 	}
+	topfile = file;
 
 	conf_init(conf);
 
 	yyparse();
 	errors = file->errors;
-	file->errors = 0;
 	popfile();
 
 	if (errors) {
@@ -578,11 +597,8 @@ parse_config(const char *filename, struct conf *xconf)
 		(void)strlcpy(xconf->lockpath, conf->lockpath,
 		    sizeof(xconf->lockpath));
 
-		for (i = 0; i < CWM_COLOR_BORDER_MAX; i++)
+		for (i = 0; i < CWM_COLOR_NITEMS; i++)
 			xconf->color[i] = conf->color[i];
-
-		for (i = 0; i < CWM_COLOR_MENU_MAX; i++)
-			xconf->menucolor[i] = conf->menucolor[i];
 
 		xconf->font = conf->font;
 	}
