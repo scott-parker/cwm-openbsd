@@ -1,4 +1,4 @@
-.\"	$OpenBSD: cwmrc.5,v 1.54 2013/07/08 18:39:20 okan Exp $
+.\"	$OpenBSD: cwmrc.5,v 1.58 2014/01/29 21:17:33 okan Exp $
 .\"
 .\" Copyright (c) 2004,2005 Marius Aamodt Eriksen <marius@monkey.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: July 8 2013 $
+.Dd $Mdocdate: January 29 2014 $
 .Dt CWMRC 5
 .Os
 .Sh NAME
@@ -64,8 +64,8 @@ are both set in the WM_CLASS property and may be obtained using
 .Xr xprop 1 .
 .Pp
 .It Ic bind Ar keys command
-Cause the creation of a keybinding, or replacement of a default
-keybinding.
+Cause the creation of a key binding, or replacement of a default
+key binding.
 The modifier keys come first, followed by a
 .Sq - .
 .Pp
@@ -84,10 +84,8 @@ The Mod4 key (normally the windows key).
 .Pp
 The
 .Sq -
-should be followed by either a keysym name, taken from
-.Pa /usr/X11R6/include/X11/keysymdef.h ,
-or a numerical keycode value enclosed in
-.Dq [] .
+should be followed by a keysym name, taken from
+.Pa /usr/X11R6/include/X11/keysymdef.h .
 The
 .Ar command
 may either be one from the
@@ -98,7 +96,7 @@ A special
 .Ar command
 keyword
 .Dq unmap
-can be used to remove the named keybinding.
+can be used to remove the named key binding.
 This can be used to remove a binding which conflicts with an
 application.
 .Pp
@@ -127,6 +125,9 @@ Set menu background color.
 .It Ic color menufg Ar color
 Set menu foreground color.
 .Pp
+.It Ic color urgencyborder Ar color
+Set the color of the border of a window indicating urgency.
+.Pp
 .It Ic color ungroupborder Ar color
 Set the color of the border while ungrouping a window.
 .Pp
@@ -147,7 +148,7 @@ and
 .Nm lock
 have a special meaning.
 They point to the terminal and screen locking programs specified by
-keybindings.
+key bindings.
 The defaults are
 .Xr xterm 1
 and
@@ -257,7 +258,7 @@ ignore xwi
 ignore xapm
 ignore xclock
 
-# Keybindings
+# Key bindings
 bind CM-r	label
 bind CS-Return	"xterm -e top"
 bind 4-o	unmap
@@ -272,7 +273,7 @@ bind MS-1	movetogroup1
 bind MS-2	movetogroup2
 bind MS-3	movetogroup3
 
-# Mousebindings
+# Mouse bindings
 mousebind M-2	window_lower
 mousebind M-3	window_resize
 .Ed
@@ -340,12 +341,14 @@ Raise current window.
 Label current window.
 .It freeze
 Freeze current window geometry.
+.It fullscreen
+Full-screen current window (gap + border removed).
 .It maximize
-Maximize current window full-screen.
+Maximize current window (gap + border honored).
 .It vmaximize
-Maximize current window vertically.
+Vertically maximize current window (gap + border honored).
 .It hmaximize
-Maximize current window horizontally.
+Horizontally maximize current window (gap + border honored).
 .It moveup
 Move window
 .Ar moveamount

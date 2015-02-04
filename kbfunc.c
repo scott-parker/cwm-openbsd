@@ -15,7 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: kbfunc.c,v 1.79 2013/07/08 18:19:22 okan Exp $
+ * $OpenBSD: kbfunc.c,v 1.95 2014/01/30 15:41:11 okan Exp $
  */
 
 #include <sys/param.h>
@@ -35,12 +35,12 @@
 
 #define HASH_MARKER	"|1|"
 
-extern char		**cwm_argv;
-extern sig_atomic_t	xev_quit;
+extern sig_atomic_t	 cwm_status;
 
 void
 kbfunc_client_lower(struct client_ctx *cc, union arg *arg)
 {
+	client_ptrsave(cc);
 	client_lower(cc);
 }
 
@@ -56,8 +56,9 @@ void
 kbfunc_client_moveresize(struct client_ctx *cc, union arg *arg)
 {
 	struct screen_ctx	*sc = cc->sc;
+	struct geom		 xine;
 	int			 x, y, flags, amt;
-	u_int			 mx, my;
+	unsigned int		 mx, my;
 
 	if (cc->flags & CLIENT_FREEZE)
 		return;
@@ -99,12 +100,15 @@ kbfunc_client_moveresize(struct client_ctx *cc, union arg *arg)
 		if (cc->geom.y > sc->view.h - 1)
 			cc->geom.y = sc->view.h - 1;
 
+		xine = screen_find_xinerama(sc,
+		    cc->geom.x + cc->geom.w / 2,
+		    cc->geom.y + cc->geom.h / 2, CWM_GAP);
 		cc->geom.x += client_snapcalc(cc->geom.x,
 		    cc->geom.x + cc->geom.w + (cc->bwidth * 2),
-		    sc->work.x, sc->work.w, Conf.snapdist);
+		    xine.x, xine.x + xine.w, sc->snapdist);
 		cc->geom.y += client_snapcalc(cc->geom.y,
 		    cc->geom.y + cc->geom.h + (cc->bwidth * 2),
-		    sc->work.y, sc->work.h, Conf.snapdist);
+		    xine.y, xine.y + xine.h, sc->snapdist);
 
 		client_move(cc);
 		xu_ptr_getpos(cc->win, &x, &y);
@@ -147,13 +151,8 @@ kbfunc_client_search(struct client_ctx *cc, union arg *arg)
 	old_cc = client_current();
 
 	TAILQ_INIT(&menuq);
-
-	TAILQ_FOREACH(cc, &Clientq, entry) {
-		mi = xcalloc(1, sizeof(*mi));
-		(void)strlcpy(mi->text, cc->name, sizeof(mi->text));
-		mi->ctx = cc;
-		TAILQ_INSERT_TAIL(&menuq, mi, entry);
-	}
+	TAILQ_FOREACH(cc, &Clientq, entry)
+		menuq_add(&menuq, cc, "%s", cc->name);
 
 	if ((mi = menu_filter(sc, &menuq, "window", NULL, 0,
 	    search_match_client, search_print_client)) != NULL) {
@@ -170,7 +169,7 @@ kbfunc_client_search(struct client_ctx *cc, union arg *arg)
 }
 
 void
-kbfunc_menu_search(struct client_ctx *cc, union arg *arg)
+kbfunc_menu_cmd(struct client_ctx *cc, union arg *arg)
 {
 	struct screen_ctx	*sc = cc->sc;
 	struct cmd		*cmd;
@@ -178,17 +177,12 @@ kbfunc_menu_search(struct client_ctx *cc, union arg *arg)
 	struct menu_q		 menuq;
 
 	TAILQ_INIT(&menuq);
-
-	TAILQ_FOREACH(cmd, &Conf.cmdq, entry) {
-		mi = xcalloc(1, sizeof(*mi));
-		(void)strlcpy(mi->text, cmd->label, sizeof(mi->text));
-		mi->ctx = cmd;
-		TAILQ_INSERT_TAIL(&menuq, mi, entry);
-	}
+	TAILQ_FOREACH(cmd, &Conf.cmdq, entry)
+		menuq_add(&menuq, cmd, "%s", cmd->name);
 
 	if ((mi = menu_filter(sc, &menuq, "application", NULL, 0,
 	    search_match_text, NULL)) != NULL)
-		u_spawn(((struct cmd *)mi->ctx)->image);
+		u_spawn(((struct cmd *)mi->ctx)->path);
 
 	menuq_clear(&menuq);
 }
@@ -234,8 +228,9 @@ kbfunc_exec(struct client_ctx *cc, union arg *arg)
 {
 #define NPATHS 256
 	struct screen_ctx	*sc = cc->sc;
-	char			**ap, *paths[NPATHS], *path, *pathcpy, *label;
+	char			**ap, *paths[NPATHS], *path, *pathcpy;
 	char			 tpath[MAXPATHLEN];
+	const char		*label;
 	DIR			*dirp;
 	struct dirent		*dp;
 	struct menu		*mi;
@@ -243,15 +238,15 @@ kbfunc_exec(struct client_ctx *cc, union arg *arg)
 	int			 l, i, cmd = arg->i;
 
 	switch (cmd) {
-		case CWM_EXEC_PROGRAM:
-			label = "exec";
-			break;
-		case CWM_EXEC_WM:
-			label = "wm";
-			break;
-		default:
-			err(1, "kbfunc_exec: invalid cmd %d", cmd);
-			/*NOTREACHED*/
+	case CWM_EXEC_PROGRAM:
+		label = "exec";
+		break;
+	case CWM_EXEC_WM:
+		label = "wm";
+		break;
+	default:
+		errx(1, "kbfunc_exec: invalid cmd %d", cmd);
+		/*NOTREACHED*/
 	}
 
 	TAILQ_INIT(&menuq);
@@ -280,12 +275,8 @@ kbfunc_exec(struct client_ctx *cc, union arg *arg)
 			/* check for truncation etc */
 			if (l == -1 || l >= (int)sizeof(tpath))
 				continue;
-			if (access(tpath, X_OK) == 0) {
-				mi = xcalloc(1, sizeof(*mi));
-				(void)strlcpy(mi->text,
-				    dp->d_name, sizeof(mi->text));
-				TAILQ_INSERT_TAIL(&menuq, mi, entry);
-			}
+			if (access(tpath, X_OK) == 0)
+				menuq_add(&menuq, NULL, "%s", dp->d_name);
 		}
 		(void)closedir(dirp);
 	}
@@ -297,16 +288,16 @@ kbfunc_exec(struct client_ctx *cc, union arg *arg)
 		if (mi->text[0] == '\0')
 			goto out;
 		switch (cmd) {
-			case CWM_EXEC_PROGRAM:
-				u_spawn(mi->text);
-				break;
-			case CWM_EXEC_WM:
-				u_exec(mi->text);
-				warn("%s", mi->text);
-				break;
-			default:
-				err(1, "kb_func: egad, cmd changed value!");
-				break;
+		case CWM_EXEC_PROGRAM:
+			u_spawn(mi->text);
+			break;
+		case CWM_EXEC_WM:
+			u_exec(mi->text);
+			warn("%s", mi->text);
+			break;
+		default:
+			errx(1, "kb_func: egad, cmd changed value!");
+			break;
 		}
 	}
 out:
@@ -356,9 +347,7 @@ kbfunc_ssh(struct client_ctx *cc, union arg *arg)
 		if (p - buf + 1 > sizeof(hostbuf))
 			continue;
 		(void)strlcpy(hostbuf, buf, p - buf + 1);
-		mi = xcalloc(1, sizeof(*mi));
-		(void)strlcpy(mi->text, hostbuf, sizeof(mi->text));
-		TAILQ_INSERT_TAIL(&menuq, mi, entry);
+		menuq_add(&menuq, NULL, hostbuf);
 	}
 	free(lbuf);
 	(void)fclose(fp);
@@ -367,8 +356,8 @@ kbfunc_ssh(struct client_ctx *cc, union arg *arg)
 	    search_match_exec, NULL)) != NULL) {
 		if (mi->text[0] == '\0')
 			goto out;
-		l = snprintf(cmd, sizeof(cmd), "%s -e ssh %s", Conf.termpath,
-		    mi->text);
+		l = snprintf(cmd, sizeof(cmd), "%s -T '[ssh] %s' -e ssh %s",
+		    Conf.termpath, mi->text, mi->text);
 		if (l != -1 && l < sizeof(cmd))
 			u_spawn(cmd);
 	}
@@ -444,6 +433,12 @@ kbfunc_client_movetogroup(struct client_ctx *cc, union arg *arg)
 }
 
 void
+kbfunc_client_fullscreen(struct client_ctx *cc, union arg *arg)
+{
+	client_fullscreen(cc);
+}
+
+void
 kbfunc_client_maximize(struct client_ctx *cc, union arg *arg)
 {
 	client_maximize(cc);
@@ -468,27 +463,20 @@ kbfunc_client_freeze(struct client_ctx *cc, union arg *arg)
 }
 
 void
-kbfunc_quit_wm(struct client_ctx *cc, union arg *arg)
+kbfunc_cwm_status(struct client_ctx *cc, union arg *arg)
 {
-	xev_quit = 1;
-}
-
-void
-kbfunc_restart(struct client_ctx *cc, union arg *arg)
-{
-	(void)setsid();
-	(void)execvp(cwm_argv[0], cwm_argv);
+	cwm_status = arg->i;
 }
 
 void
 kbfunc_tile(struct client_ctx *cc, union arg *arg)
 {
 	switch (arg->i) {
-		case CWM_TILE_HORIZ:
-			client_htile(cc);
-			break;
-		case CWM_TILE_VERT:
-			client_vtile(cc);
-			break;
+	case CWM_TILE_HORIZ:
+		client_htile(cc);
+		break;
+	case CWM_TILE_VERT:
+		client_vtile(cc);
+		break;
 	}
 }

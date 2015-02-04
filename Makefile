@@ -1,42 +1,24 @@
-PREFIX?= /usr/local
-BINDIR?= $(PREFIX)/bin
-MANDIR?= $(PREFIX)/man
+# $OpenBSD: Makefile,v 1.20 2013/05/19 23:38:20 okan Exp $
 
-CC?= gcc
-YACC?= bison -y
-CFLAGS+= -O2 -Wall -D_GNU_SOURCE
-LDADD+= -lXft -lXrender -lX11 -lxcb -lXau -lXdmcp -lfontconfig -lexpat \
-        -lfreetype -lz -lXinerama -lXrandr -lXext
+.include <bsd.xconf.mk>
 
-SRCS= $(shell ls *.c) y.tab.c
-OBJS= $(SRCS:.c=.o)
-DEPS= $(addsuffix .depend, $(OBJS))
+PROG=		cwm
 
-all: y.tab.c cwm
+SRCS=		calmwm.c screen.c xmalloc.c client.c menu.c \
+		search.c util.c xutil.c conf.c xevents.c group.c \
+		kbfunc.c mousefunc.c parse.y
 
-y.tab.c:
-	$(YACC) parse.y
+CPPFLAGS+=	-I${X11BASE}/include -I${X11BASE}/include/freetype2 -I${.CURDIR}
 
-cwm: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $+ $(LDADD)
+CFLAGS+=	-Wall
 
-%.o: %.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ -c $<
+LDADD+=		-L${X11BASE}/lib -lXft -lXrender -lX11 -lxcb -lXau -lXdmcp \
+		-lfontconfig -lexpat -lfreetype -lz -lXinerama -lXrandr -lXext
 
-install: all
-	install -m 755 -d $(DESTDIR)$(BINDIR)
-	install -m 755 -d $(DESTDIR)$(MANDIR)/man1
-	install -m 755 -d $(DESTDIR)$(MANDIR)/man5
-	install -m 755 cwm $(DESTDIR)$(BINDIR)
-	install -m 644 cwm.1 $(DESTDIR)$(MANDIR)/man1
-	install -m 644 cwmrc.5 $(DESTDIR)$(MANDIR)/man5
+MANDIR=		${X11BASE}/man/man
+MAN=		cwm.1 cwmrc.5
 
-uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/cwm
-	rm -f $(DESTDIR)$(MANDIR)/man1/cwm.1
-	rm -f $(DESTDIR)$(MANDIR)/man5/cwmrc.5
+obj: _xenocara_obj
 
-clean:
-	rm -f y.tab.c cwm $(OBJS)
-
-.PHONY: all install clean
+.include <bsd.prog.mk>
+.include <bsd.xorg.mk>

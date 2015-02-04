@@ -16,7 +16,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- * $OpenBSD: group.c,v 1.79 2013/07/15 14:50:44 okan Exp $
+ * $OpenBSD: group.c,v 1.87 2014/02/08 02:49:30 okan Exp $
  */
 
 #include <sys/param.h>
@@ -32,8 +32,7 @@
 
 #include "calmwm.h"
 
-static void		 group_add(struct group_ctx *, struct client_ctx *);
-static void		 group_remove(struct client_ctx *);
+static void		 group_assign(struct group_ctx *, struct client_ctx *);
 static void		 group_hide(struct screen_ctx *, struct group_ctx *);
 static void		 group_show(struct screen_ctx *, struct group_ctx *);
 static void		 group_fix_hidden_state(struct group_ctx *);
@@ -46,11 +45,10 @@ const char *shortcut_to_name[] = {
 };
 
 static void
-group_add(struct group_ctx *gc, struct client_ctx *cc)
+group_assign(struct group_ctx *gc, struct client_ctx *cc)
 {
-	if (cc == NULL || gc == NULL)
-		errx(1, "group_add: a ctx is NULL");
-
+	if (gc == NULL)
+		gc = TAILQ_FIRST(&cc->sc->groupq);
 	if (cc->group == gc)
 		return;
 
@@ -59,18 +57,6 @@ group_add(struct group_ctx *gc, struct client_ctx *cc)
 
 	TAILQ_INSERT_TAIL(&gc->clients, cc, group_entry);
 	cc->group = gc;
-
-	xu_ewmh_net_wm_desktop(cc);
-}
-
-static void
-group_remove(struct client_ctx *cc)
-{
-	if (cc == NULL || cc->group == NULL)
-		errx(1, "group_remove: a ctx is NULL");
-
-	TAILQ_REMOVE(&cc->group->clients, cc, group_entry);
-	cc->group = NULL;
 
 	xu_ewmh_net_wm_desktop(cc);
 }
@@ -105,7 +91,7 @@ group_show(struct screen_ctx *sc, struct group_ctx *gc)
 		if (cc->stackingorder > gc->highstack)
 			gc->highstack = cc->stackingorder;
 	}
-	winlist = (Window *) xcalloc(sizeof(*winlist), (gc->highstack + 1));
+	winlist = xcalloc((gc->highstack + 1), sizeof(*winlist));
 
 	/*
 	 * Invert the stacking order as XRestackWindows() expects them
@@ -162,6 +148,15 @@ group_init(struct screen_ctx *sc)
 	group_setactive(sc, 1);
 }
 
+void
+group_set_state(struct screen_ctx *sc)
+{
+	struct group_ctx	*gc;
+
+	TAILQ_FOREACH(gc, &sc->groupq, entry)
+		group_fix_hidden_state(gc);
+}
+
 static void
 group_setactive(struct screen_ctx *sc, long idx)
 {
@@ -177,7 +172,7 @@ group_movetogroup(struct client_ctx *cc, int idx)
 	struct group_ctx	*gc;
 
 	if (idx < 0 || idx >= CALMWM_NGROUPS)
-		err(1, "group_movetogroup: index out of range (%d)", idx);
+		errx(1, "group_movetogroup: index out of range (%d)", idx);
 
 	gc = &sc->groups[idx];
 	if (cc->group == gc)
@@ -186,7 +181,7 @@ group_movetogroup(struct client_ctx *cc, int idx)
 		client_hide(cc);
 		gc->nhidden++;
 	}
-	group_add(gc, cc);
+	group_assign(gc, cc);
 }
 
 /*
@@ -199,10 +194,10 @@ group_sticky_toggle_enter(struct client_ctx *cc)
 	struct group_ctx	*gc = sc->group_active;
 
 	if (gc == cc->group) {
-		group_remove(cc);
+		group_assign(NULL, cc);
 		cc->flags |= CLIENT_UNGROUP;
 	} else {
-		group_add(gc, cc);
+		group_assign(gc, cc);
 		cc->flags |= CLIENT_GROUP;
 	}
 
@@ -240,7 +235,7 @@ group_hidetoggle(struct screen_ctx *sc, int idx)
 	struct group_ctx	*gc;
 
 	if (idx < 0 || idx >= CALMWM_NGROUPS)
-		err(1, "group_hidetoggle: index out of range (%d)", idx);
+		errx(1, "group_hidetoggle: index out of range (%d)", idx);
 
 	gc = &sc->groups[idx];
 	group_fix_hidden_state(gc);
@@ -258,16 +253,16 @@ group_hidetoggle(struct screen_ctx *sc, int idx)
 void
 group_only(struct screen_ctx *sc, int idx)
 {
-	int	 i;
+	struct group_ctx	*gc;
 
 	if (idx < 0 || idx >= CALMWM_NGROUPS)
-		err(1, "group_only: index out of range (%d)", idx);
+		errx(1, "group_only: index out of range (%d)", idx);
 
-	for (i = 0; i < CALMWM_NGROUPS; i++) {
-		if (i == idx)
-			group_show(sc, &sc->groups[i]);
+	TAILQ_FOREACH(gc, &sc->groupq, entry) {
+		if (gc->shortcut == idx)
+			group_show(sc, gc);
 		else
-			group_hide(sc, &sc->groups[i]);
+			group_hide(sc, gc);
 	}
 }
 
@@ -314,25 +309,15 @@ group_menu(struct screen_ctx *sc)
 	struct group_ctx	*gc;
 	struct menu		*mi;
 	struct menu_q		 menuq;
-	int			 i;
 
 	TAILQ_INIT(&menuq);
 
-	for (i = 0; i < CALMWM_NGROUPS; i++) {
-		gc = &sc->groups[i];
-
+	TAILQ_FOREACH(gc, &sc->groupq, entry) {
 		if (TAILQ_EMPTY(&gc->clients))
 			continue;
 
-		mi = xcalloc(1, sizeof(*mi));
-		if (gc->hidden)
-			(void)snprintf(mi->text, sizeof(mi->text), "%d: [%s]",
-			    gc->shortcut, sc->group_names[i]);
-		else
-			(void)snprintf(mi->text, sizeof(mi->text), "%d: %s",
-			    gc->shortcut, sc->group_names[i]);
-		mi->ctx = gc;
-		TAILQ_INSERT_TAIL(&menuq, mi, entry);
+		menuq_add(&menuq, gc, gc->hidden ? "%d: [%s]" : "%d: %s",
+		    gc->shortcut, sc->group_names[gc->shortcut]);
 	}
 
 	if (TAILQ_EMPTY(&menuq))
@@ -350,16 +335,15 @@ group_menu(struct screen_ctx *sc)
 void
 group_alltoggle(struct screen_ctx *sc)
 {
-	int	 i;
+	struct group_ctx	*gc;
 
-	for (i = 0; i < CALMWM_NGROUPS; i++) {
+	TAILQ_FOREACH(gc, &sc->groupq, entry) {
 		if (sc->group_hideall)
-			group_show(sc, &sc->groups[i]);
+			group_show(sc, gc);
 		else
-			group_hide(sc, &sc->groups[i]);
+			group_hide(sc, gc);
 	}
-
-	sc->group_hideall = (!sc->group_hideall);
+	sc->group_hideall = !sc->group_hideall;
 }
 
 void
@@ -371,12 +355,12 @@ group_autogroup(struct client_ctx *cc)
 	int			 no = -1, both_match = 0;
 	long			*grpno;
 
-	if (cc->app_class == NULL || cc->app_name == NULL)
+	if (cc->ch.res_class == NULL || cc->ch.res_name == NULL)
 		return;
 
 	if (xu_getprop(cc->win, ewmh[_NET_WM_DESKTOP],
 	    XA_CARDINAL, 1, (unsigned char **)&grpno) > 0) {
-		if (*grpno == 0xffffffff)
+		if (*grpno == -1)
 			no = 0;
 		else if (*grpno > CALMWM_NGROUPS || *grpno < 0)
 			no = CALMWM_NGROUPS - 1;
@@ -385,9 +369,9 @@ group_autogroup(struct client_ctx *cc)
 		XFree(grpno);
 	} else {
 		TAILQ_FOREACH(aw, &Conf.autogroupq, entry) {
-			if (strcmp(aw->class, cc->app_class) == 0) {
+			if (strcmp(aw->class, cc->ch.res_class) == 0) {
 				if ((aw->name != NULL) &&
-				    (strcmp(aw->name, cc->app_name) == 0)) {
+				    (strcmp(aw->name, cc->ch.res_name) == 0)) {
 					no = aw->num;
 					both_match = 1;
 				} else if (aw->name == NULL && !both_match)
@@ -396,19 +380,17 @@ group_autogroup(struct client_ctx *cc)
 		}
 	}
 
-	/* no group please */
-	if (no == 0)
-		return;
-
 	TAILQ_FOREACH(gc, &sc->groupq, entry) {
 		if (gc->shortcut == no) {
-			group_add(gc, cc);
+			group_assign(gc, cc);
 			return;
 		}
 	}
 
 	if (Conf.flags & CONF_STICKY_GROUPS)
-		group_add(sc->group_active, cc);
+		group_assign(sc->group_active, cc);
+	else
+		group_assign(NULL, cc);
 }
 
 void
@@ -419,7 +401,7 @@ group_update_names(struct screen_ctx *sc)
 	int		 i = 0, j = 0, nstrings = 0, n = 0, setnames = 0;
 
 	if ((j = xu_getprop(sc->rootwin, ewmh[_NET_DESKTOP_NAMES],
-	    cwmh[UTF8_STRING], 0xffffff, (u_char **)&prop_ret)) > 0) {
+	    cwmh[UTF8_STRING], 0xffffff, (unsigned char **)&prop_ret)) > 0) {
 		prop_ret[j - 1] = '\0'; /* paranoia */
 		while (i < j) {
 			if (prop_ret[i++] == '\0')
